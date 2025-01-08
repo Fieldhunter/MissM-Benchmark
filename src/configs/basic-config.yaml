@@ -1,0 +1,44 @@
+dataset:
+  # dataset name
+  name: dataset_name
+  # dataset root
+  train_root: '/big-data/dataset-academic/COCO2014/train2014/'
+  val_root: '/big-data/dataset-academic/COCO2014/val2014/'
+  test_root: '/big-data/dataset-academic/COCO2014/test2014/'
+  # clip download root, for using clip models if needed.
+  clip_download_root: '/big-data/person/guanzhouke/clip_models'
+  # For classificaiton task, the class name path is needed.
+  class_name_path: './data/mscoco/category.json'
+  train_metadata_path: './data/mscoco/train_anno.json'
+  val_metadata_path: './data/mscoco/val_anno.json'
+  test_metadata_path: './data/mscoco/val_anno.json'
+  # For missing config, the missing config path is needed.
+  missing_config: './data/mscoco/missing-config/train-mixed-0.5.json'
+  # missing tag.
+  is_missing: true
+  # return raw data or not.
+  keep_raw: false
+  # merge metadata or not with the missing config.
+  merge_metadata: true
+
+training:
+  epochs: 100
+  learning_rate: 0.001
+  optimizer: "adam"
+  loss_function: "cross_entropy"
+  checkpoint_dir: "/path/to/checkpoints"
+  log_dir: "/path/to/logs"
+
+model:
+  name: "default_model"
+  input_size: 224
+  output_size: 10
+  hidden_layers: [128, 64]
+
+evaluation:
+  metrics: ["accuracy", "precision", "recall"]
+  eval_interval: 1
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

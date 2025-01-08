@@ -1,0 +1,6 @@
+defaults:
+  - src/configs/basic_config.yaml
+
+dataset:
+  name: coco_classification
+
