@@ -26,6 +26,11 @@ class CocoClassification(BasicDataset):
         raise NotImplementedError
 
 
+"""
+目前假设的数据集组织形式为：每个样本的三个模态都是单个文件
+"""
+
+
 def read_raw_text(file_path='text.txt'):
     with open(file_path, "r") as file:
         content = file.read()
