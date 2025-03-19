@@ -6,12 +6,9 @@ import numpy as np
 import argparse
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
-from sklearn.metrics import accuracy_score, f1_score
-
-
 from src.dataset.data_loader import MMDataLoader
-from classifier import MultiModalClassifier
-os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+from src.model.MULT import MultiModal_Sentiment_Analysis
+
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -27,23 +24,26 @@ def parse_args():
     parser.add_argument('--need_normalized', type=bool, default=True)
     parser.add_argument('--modal_missing', type=bool, default=False)
     parser.add_argument('--seq_lens', type=tuple, default=(39, 400, 55))
+    parser.add_argument('--feature_dims', type=tuple, default=(768, 33, 709))
+    parser.add_argument('--dst_feature_dim_nheads', type=tuple, default=(50, 10))
 
     # 模型相关参数
     parser.add_argument('--text_model_name', type=str, default='bert-base-chinese')
     parser.add_argument('--modality_types', type=str, nargs='+', default=['text', 'audio', 'vision'])
-    parser.add_argument('--fusion_method', type=str, default='early_fusion')
-    parser.add_argument('--hidden_size', type=int, default=128)
-    parser.add_argument('--dropout', type=float, default=0.3)
+    parser.add_argument('--fusion_type', type=str, default='concat')
+    parser.add_argument('--fusion_dim', type=int, default=64)
+    parser.add_argument('--dropout_prob', type=float, default=0.2)
 
     # 训练相关参数
     parser.add_argument('--num_epochs', type=int, default=50)
-    parser.add_argument('--learning_rate', type=float, default=2e-5)
-    parser.add_argument('--weight_decay', type=float, default=1e-5)
+    parser.add_argument('--learning_rate', type=float, default=1e-4)
+    parser.add_argument('--weight_decay', type=float, default=0)
     parser.add_argument('--patience', type=int, default=5)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
-    parser.add_argument('--save_path', type=str, default='./checkpoints')
-    parser.add_argument('--log_dir', type=str, default='./logs')
+    parser.add_argument('--name', type=str, default='test/')
+    parser.add_argument('--save_path', type=str, default='checkpoints')
+    parser.add_argument('--log_dir', type=str, default='logs')
 
     return parser.parse_args()
 
@@ -57,7 +57,7 @@ def set_seed(seed):
 
 def get_criterion(args):
     if args.train_mode == 'regression':
-        return nn.MSELoss()
+        return nn.L1Loss()
     else:
         return nn.CrossEntropyLoss()
 
@@ -74,9 +74,7 @@ def evaluate(model, dataloader, criterion, device):
             text_data = batch['text'].to(device)
             audio_data = batch['audio'].to(device)
             vision_data = batch['vision'].to(device)
-            labels = batch['labels']
-            for key in labels.keys():
-                labels[key] = labels[key].to(device)
+            labels = batch['labels']['M'].to(device)
 
             # 准备输入
             model_input = {
@@ -86,16 +84,11 @@ def evaluate(model, dataloader, criterion, device):
             }
 
             # 前向传播
-            outputs = model(model_input)
-            # loss = criterion(outputs, labels)
+            outputs = model(model_input)['M']
+            loss = criterion(outputs, labels)
+            total_loss += loss.item()
 
-            # total_loss += loss.item()
-
-            for key in labels.keys():
-                if key in outputs:
-                    total_loss += criterion(outputs[key], labels[key])
-
-            # 处理预测结果
+            # # 处理预测结果
             # if args.train_mode == 'regression':
             #     preds = outputs.detach().cpu().numpy()
             #     all_preds.extend(preds)
@@ -104,15 +97,16 @@ def evaluate(model, dataloader, criterion, device):
             #     preds = torch.argmax(outputs, dim=1).detach().cpu().numpy()
             #     all_preds.extend(preds)
             #     all_labels.extend(labels.detach().cpu().numpy())
-            metrics = {}
-            for emotion in ['A', 'M', 'T', 'V']:
-                if emotion in all_preds and len(all_preds[emotion]) > 0:
-                    emotion_preds = np.array(all_preds[emotion])
-                    emotion_labels = np.array(all_labels[emotion])
-
-                    # 计算该情感的指标（例如MSE、相关系数等）
-                    mse = np.mean((emotion_preds - emotion_labels) ** 2)
-                    metrics[f'{emotion}_mse'] = mse
+            #
+            # metrics = {}
+            # for emotion in ['A', 'M', 'T', 'V']:
+            #     if emotion in all_preds and len(all_preds[emotion]) > 0:
+            #         emotion_preds = np.array(all_preds[emotion])
+            #         emotion_labels = np.array(all_labels[emotion])
+            #
+            #         # 计算该情感的指标（例如MSE、相关系数等）
+            #         mse = np.mean((emotion_preds - emotion_labels) ** 2)
+            #         metrics[f'{emotion}_mse'] = mse
     # 计算指标
     # if args.train_mode == 'regression':
     #     # 对于回归任务，计算MSE
@@ -126,9 +120,9 @@ def evaluate(model, dataloader, criterion, device):
     #         'f1': f1_score(all_labels, all_preds, average='weighted')
     #     }
     avg_loss = total_loss / len(dataloader)
-    metrics['loss'] = avg_loss
+    # metrics['loss'] = avg_loss
 
-    return metrics
+    return {'loss': avg_loss}
 
 
 def train(args):
@@ -136,28 +130,16 @@ def train(args):
     set_seed(args.seed)
 
     # 创建保存目录
-    os.makedirs(args.save_path, exist_ok=True)
-    os.makedirs(args.log_dir, exist_ok=True)
+    save_path = './experiments/'+args.name+args.save_path
+    log_dir = './experiments/'+args.name+args.log_dir
+    os.makedirs(save_path, exist_ok=True)
+    os.makedirs(log_dir, exist_ok=True)
 
     # 初始化TensorBoard
-    writer = SummaryWriter(log_dir=args.log_dir)
-
-    # 创建配置字典
+    writer = SummaryWriter(log_dir=log_dir)
 
     # 设备
     device = torch.device(args.device)
-
-    # 加载数据
-    print("Loading data...")
-    data_config = {
-        'datasetName': args.datasetName,
-        'batch_size': args.batch_size,
-        'dataPath': args.dataPath,
-        'need_data_aligned': args.need_data_aligned,
-        'need_truncated': args.need_truncated,
-        'need_normalized': args.need_normalized,
-        'seq_lens': args.seq_lens if isinstance(args.seq_lens, tuple) else tuple(args.seq_lens)
-    }
 
     # 加载数据集
     print("Loading data...")
@@ -168,12 +150,11 @@ def train(args):
 
     # 初始化模型
     print("Initializing model...")
-    model = MultiModalClassifier(data_config,device)
-    model = model.to(args.device)
+    model = MultiModal_Sentiment_Analysis(args, device).to(args.device)
 
     # 定义损失函数和优化器
     criterion = get_criterion(args)
-    optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
+    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2, verbose=True)
 
     # 训练循环
@@ -194,9 +175,8 @@ def train(args):
             text_data = batch['text'].to(args.device)
             audio_data = batch['audio'].to(args.device)
             vision_data = batch['vision'].to(args.device)
-            labels = batch['labels']
-            for key in labels.keys():
-                labels[key] = labels[key].to(device)
+            labels = batch['labels']['M'].to(args.device)
+
             # 准备输入
             model_input = {
                 'text': text_data,
@@ -205,13 +185,9 @@ def train(args):
             }
 
             # 前向传播
-            outputs = model(model_input)
-            # loss = criterion(outputs, labels)
+            outputs = model(model_input)['M']
+            loss = criterion(outputs, labels)
 
-            loss = 0
-            for key in labels.keys():
-                if key in outputs:
-                    loss += criterion(outputs[key], labels[key])
             # 反向传播
             loss.backward()
             optimizer.step()
