@@ -3,7 +3,6 @@ from torch import nn
 from torch.nn import Parameter
 import torch.nn.functional as F
 import math
-from transformers import AutoModel
 
 
 class MultiheadAttention(nn.Module):
@@ -434,12 +433,12 @@ From: https://github.com/yaohungt/Multimodal-Transformer
 Paper: Multimodal Transformer for Unaligned Multimodal Language Sequences
 """
 class MultiModal_Sentiment_Analysis(nn.Module):
-    def __init__(self, args, device):
+    def __init__(self, args):
         super(MultiModal_Sentiment_Analysis, self).__init__()
-        self.text_model = AutoModel.from_pretrained(args.text_model_name)
+
         # Mult Model Initialization.
         dst_feature_dims, nheads = args.dst_feature_dim_nheads
-        self.orig_d_l, self.orig_d_a, self.orig_d_v = args.feature_dims
+        self.orig_d_l = self.orig_d_a = self.orig_d_v = args.feature_dims
         self.d_l = self.d_a = self.d_v = dst_feature_dims
         self.num_heads = nheads
         # self.layers = args.nlevels
@@ -468,7 +467,7 @@ class MultiModal_Sentiment_Analysis(nn.Module):
         output_dim = args.num_classes if args.train_mode == "classification" else 1
 
         # 1. Temporal convolutional layers
-        conv1d_kernel_size_l = 5
+        conv1d_kernel_size_l = 1
         conv1d_kernel_size_a = 1
         conv1d_kernel_size_v = 1
         self.proj_l = nn.Conv1d(self.orig_d_l, self.d_l, kernel_size=conv1d_kernel_size_l, padding=0, bias=False)
@@ -524,29 +523,14 @@ class MultiModal_Sentiment_Analysis(nn.Module):
                                   attn_mask=self.attn_mask)
 
     def forward(self, batch):
-        text, audio, video = batch['text'], batch['audio'], batch['vision']
+        x_l = batch['language']  # [batchsize, channels]
+        x_a = batch['audio']  # [batchsize, channels]
+        x_v = batch['video']  # [batchsize, channels]
 
-        input_ids = text[:, 0, :].long()  # 第1维作为 input_ids
-        attention_mask = text[:, 1, :].long()  # 第2维作为 attention_mask
-        token_type_ids = text[:, 2, :].long()  # 第3维作为 token_type_ids
-
-        # 构造 BERT 的输入
-        bert_inputs = {
-            'input_ids': input_ids,
-            'attention_mask': attention_mask,
-            'token_type_ids': token_type_ids
-        }
-
-        text_outputs = self.text_model(**bert_inputs)
-        text = text_outputs.last_hidden_state
-
-        x_l = F.dropout(text.transpose(1, 2), p=self.text_dropout, training=self.training)
-        x_a = audio.transpose(1, 2)
-        x_v = video.transpose(1, 2)
         # Project the textual/visual/audio features
-        proj_x_l = x_l if self.orig_d_l == self.d_l else self.proj_l(x_l)
-        proj_x_a = x_a if self.orig_d_a == self.d_a else self.proj_a(x_a)
-        proj_x_v = x_v if self.orig_d_v == self.d_v else self.proj_v(x_v)
+        proj_x_l = self.proj_l(x_l.unsqueeze(-1))
+        proj_x_a = self.proj_a(x_a.unsqueeze(-1))
+        proj_x_v = self.proj_v(x_v.unsqueeze(-1))
         proj_x_a = proj_x_a.permute(2, 0, 1)
         proj_x_v = proj_x_v.permute(2, 0, 1)
         proj_x_l = proj_x_l.permute(2, 0, 1)
@@ -585,11 +569,5 @@ class MultiModal_Sentiment_Analysis(nn.Module):
         last_hs_proj += last_hs
 
         output = self.out_layer(last_hs_proj)
-        res = {
-            'Feature_t': last_h_l,
-            'Feature_a': last_h_a,
-            'Feature_v': last_h_v,
-            'Feature_f': last_hs,
-            'M': output
-        }
-        return res
+
+        return output

@@ -6,8 +6,9 @@ import numpy as np
 import argparse
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
-from src.dataset.data_loader import MMDataLoader
+from src.dataset.data_loader import data_loader
 from src.model.MULT import MultiModal_Sentiment_Analysis
+from src.model.baseline import Baseline
 
 
 def parse_args():
@@ -15,7 +16,7 @@ def parse_args():
     # 数据相关参数
     parser.add_argument('--train_mode', type=str, default="regression", help='regression or classification')
     parser.add_argument('--datasetName', type=str, default='sims', help='support mosi/mosei/sims')
-    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--num_workers', type=int, default=4)
     parser.add_argument('--dataPath', type=str, default='/big-data/person/yuanjiang/MLMM_datasets/CH-SIMS/unaligned_39.pkl')
     parser.add_argument('--use_bert', type=bool, default=True)
@@ -24,7 +25,7 @@ def parse_args():
     parser.add_argument('--need_normalized', type=bool, default=True)
     parser.add_argument('--modal_missing', type=bool, default=False)
     parser.add_argument('--seq_lens', type=tuple, default=(39, 400, 55))
-    parser.add_argument('--feature_dims', type=tuple, default=(768, 33, 709))
+    parser.add_argument('--feature_dims', type=int, default=768)
     parser.add_argument('--dst_feature_dim_nheads', type=tuple, default=(50, 10))
 
     # 模型相关参数
@@ -32,7 +33,7 @@ def parse_args():
     parser.add_argument('--modality_types', type=str, nargs='+', default=['text', 'audio', 'vision'])
     parser.add_argument('--fusion_type', type=str, default='concat')
     parser.add_argument('--fusion_dim', type=int, default=64)
-    parser.add_argument('--dropout_prob', type=float, default=0.2)
+    parser.add_argument('--dropout_prob', type=float, default=0.1)
 
     # 训练相关参数
     parser.add_argument('--num_epochs', type=int, default=50)
@@ -69,22 +70,14 @@ def evaluate(model, dataloader, criterion, device):
     all_labels = []
 
     with torch.no_grad():
-        for batch in dataloader:
+        for data, label in tqdm(dataloader):
             # 处理数据
-            text_data = batch['text'].to(device)
-            audio_data = batch['audio'].to(device)
-            vision_data = batch['vision'].to(device)
-            labels = batch['labels']['M'].to(device)
-
-            # 准备输入
-            model_input = {
-                'text': text_data,
-                'audio': audio_data,
-                'vision': vision_data
-            }
+            for k, v in data.items():
+                data[k] = v.to(args.device)
+            labels = label['label'].to(args.device)
 
             # 前向传播
-            outputs = model(model_input)['M']
+            outputs = model(data)
             loss = criterion(outputs, labels)
             total_loss += loss.item()
 
@@ -143,14 +136,13 @@ def train(args):
 
     # 加载数据集
     print("Loading data...")
-    dataloaders = MMDataLoader(args)
-    train_loader = dataloaders['train']
-    valid_loader = dataloaders['valid']
-    test_loader = dataloaders['test']
+    train_loader, test_loader, valid_loader = data_loader(args.batch_size, 'sims')
 
     # 初始化模型
     print("Initializing model...")
-    model = MultiModal_Sentiment_Analysis(args, device).to(args.device)
+    # model = MultiModal_Sentiment_Analysis(args).to(args.device)
+    model = Baseline(args).to(args.device)
+
 
     # 定义损失函数和优化器
     criterion = get_criterion(args)
@@ -168,24 +160,16 @@ def train(args):
         train_loss = 0.0
         progress_bar = tqdm(train_loader, desc=f'Epoch {epoch + 1}/{args.num_epochs}')
 
-        for batch in progress_bar:
+        for data, label in progress_bar:
             optimizer.zero_grad()
 
             # 处理数据
-            text_data = batch['text'].to(args.device)
-            audio_data = batch['audio'].to(args.device)
-            vision_data = batch['vision'].to(args.device)
-            labels = batch['labels']['M'].to(args.device)
-
-            # 准备输入
-            model_input = {
-                'text': text_data,
-                'audio': audio_data,
-                'vision': vision_data
-            }
+            for k, v in data.items():
+                data[k] = v.to(args.device)
+            labels = label['label'].to(args.device)
 
             # 前向传播
-            outputs = model(model_input)['M']
+            outputs = model(data)
             loss = criterion(outputs, labels)
 
             # 反向传播
