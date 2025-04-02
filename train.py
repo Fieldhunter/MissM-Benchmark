@@ -8,7 +8,7 @@ from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 from src.dataset.data_loader import data_loader
 from src.model.MULT import MultiModal_Sentiment_Analysis
-from src.model.baseline import Baseline
+from src.model.baseline import modal_sum, modal_concat_zero_padding
 
 
 def parse_args():
@@ -16,23 +16,21 @@ def parse_args():
     # 数据相关参数
     parser.add_argument('--train_mode', type=str, default="regression", help='regression or classification')
     parser.add_argument('--datasetName', type=str, default='sims', help='support mosi/mosei/sims')
+    parser.add_argument('--modality_types', type=str, default=['language', 'video', 'audio'])
     parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--num_workers', type=int, default=4)
     parser.add_argument('--dataPath', type=str, default='/big-data/person/yuanjiang/MLMM_datasets/CH-SIMS/unaligned_39.pkl')
-    parser.add_argument('--use_bert', type=bool, default=True)
     parser.add_argument('--need_data_aligned', type=bool, default=False)
     parser.add_argument('--need_truncated', type=bool, default=True)
     parser.add_argument('--need_normalized', type=bool, default=True)
-    parser.add_argument('--modal_missing', type=bool, default=False)
-    parser.add_argument('--seq_lens', type=tuple, default=(39, 400, 55))
-    parser.add_argument('--feature_dims', type=int, default=768)
-    parser.add_argument('--dst_feature_dim_nheads', type=tuple, default=(50, 10))
+    parser.add_argument('--missing', type=bool, default=True)
+    parser.add_argument('--missing_ratio', type=float, default=0.5, help='0.3/0.5/0.7')
+    parser.add_argument('--missing_type', type=str, default='mixed', help='language/video/audio/mixed')
+    parser.add_argument('--feature_dims', type=int, default=768, help='the output dims of languagebind')
 
     # 模型相关参数
-    parser.add_argument('--text_model_name', type=str, default='bert-base-chinese')
-    parser.add_argument('--modality_types', type=str, nargs='+', default=['text', 'audio', 'vision'])
     parser.add_argument('--fusion_type', type=str, default='concat')
-    parser.add_argument('--fusion_dim', type=int, default=64)
+    parser.add_argument('--fusion_dim', type=int, default=256)
     parser.add_argument('--dropout_prob', type=float, default=0.1)
 
     # 训练相关参数
@@ -70,14 +68,14 @@ def evaluate(model, dataloader, criterion, device):
     all_labels = []
 
     with torch.no_grad():
-        for data, label in tqdm(dataloader):
+        for data, label, missing_index in tqdm(dataloader):
             # 处理数据
             for k, v in data.items():
                 data[k] = v.to(args.device)
             labels = label['label'].to(args.device)
 
             # 前向传播
-            outputs = model(data)
+            outputs = model(data, missing_index)
             loss = criterion(outputs, labels)
             total_loss += loss.item()
 
@@ -131,18 +129,15 @@ def train(args):
     # 初始化TensorBoard
     writer = SummaryWriter(log_dir=log_dir)
 
-    # 设备
-    device = torch.device(args.device)
-
     # 加载数据集
     print("Loading data...")
-    train_loader, test_loader, valid_loader = data_loader(args.batch_size, 'sims')
+    train_loader, test_loader, valid_loader = data_loader(args.batch_size, 'sims', args.missing, args.missing_type, args.missing_ratio)
 
     # 初始化模型
     print("Initializing model...")
     # model = MultiModal_Sentiment_Analysis(args).to(args.device)
-    model = Baseline(args).to(args.device)
-
+    # model = modal_sum(args).to(args.device)
+    model = modal_concat_zero_padding(args).to(args.device)
 
     # 定义损失函数和优化器
     criterion = get_criterion(args)
@@ -160,7 +155,7 @@ def train(args):
         train_loss = 0.0
         progress_bar = tqdm(train_loader, desc=f'Epoch {epoch + 1}/{args.num_epochs}')
 
-        for data, label in progress_bar:
+        for data, label, missing_index in progress_bar:
             optimizer.zero_grad()
 
             # 处理数据
@@ -169,7 +164,7 @@ def train(args):
             labels = label['label'].to(args.device)
 
             # 前向传播
-            outputs = model(data)
+            outputs = model(data, missing_index)
             loss = criterion(outputs, labels)
 
             # 反向传播

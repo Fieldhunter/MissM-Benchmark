@@ -4,8 +4,10 @@ import pickle
 
 
 class MMDataset_sims(torch.utils.data.Dataset):
-    def __init__(self, data):
+    def __init__(self, data, missing=False, missing_index=None):
         self.data = data
+        self.missing = missing
+        self.missing_index = missing_index if missing else [0 for _ in range(len(data['label']))]
 
     def __len__(self):
         return len(self.data['label'])
@@ -24,16 +26,21 @@ class MMDataset_sims(torch.utils.data.Dataset):
             'annotation': self.data['annotation'][index]
         }
 
-        return data, label
+        return data, label, self.missing_index[index]
 
 
-def data_loader(batch_size, dataset):
+def data_loader(batch_size, dataset, missing=False, missing_type='language', missing_ratio=0.3):
     if dataset == 'sims':
         embedding_path = '/big-data/person/yuanjiang/MLMM_datasets/CH-SIMS/embedding.pkl'
         with open(embedding_path, 'rb') as f:
             data = pickle.load(f)
 
-        train_data = MMDataset_sims(data['train'])
+        missing_index = None
+        if missing:
+            with open("/".join(embedding_path.split("/")[:-1]) + "/" + "missing_index.pkl", 'rb') as f:
+                missing_index = pickle.load(f)[missing_type][missing_ratio]
+
+        train_data = MMDataset_sims(data['train'], missing, missing_index)
         test_data = MMDataset_sims(data['test'])
         val_data = MMDataset_sims(data['valid'])
         train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True)

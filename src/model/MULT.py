@@ -437,7 +437,7 @@ class MultiModal_Sentiment_Analysis(nn.Module):
         super(MultiModal_Sentiment_Analysis, self).__init__()
 
         # Mult Model Initialization.
-        dst_feature_dims, nheads = args.dst_feature_dim_nheads
+        dst_feature_dims, nheads = 50, 10
         self.orig_d_l = self.orig_d_a = self.orig_d_v = args.feature_dims
         self.d_l = self.d_a = self.d_v = dst_feature_dims
         self.num_heads = nheads
