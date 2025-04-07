@@ -8,7 +8,7 @@ from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 from src.dataset.data_loader import data_loader
 from src.model.MULT import MultiModal_Sentiment_Analysis
-from src.model.baseline import modal_sum, modal_concat_zero_padding
+from src.model.baseline import modal_sum, modal_concat_zero_padding,modal_mean_filling,modal_median_filling,modal_knn_filling,modal_regression_filling,modal_attention_fusion,modal_MAE_generation
 
 
 def parse_args():
@@ -137,7 +137,13 @@ def train(args):
     print("Initializing model...")
     # model = MultiModal_Sentiment_Analysis(args).to(args.device)
     # model = modal_sum(args).to(args.device)
-    model = modal_concat_zero_padding(args).to(args.device)
+    # model = modal_concat_zero_padding(args).to(args.device)
+    # model = modal_mean_filling(args).to(args.device)
+    # model = modal_median_filling(args).to(args.device)
+    # model = modal_knn_filling(args).to(args.device)
+    # model = modal_regression_filling(args).to(args.device)
+    # model = modal_attention_fusion(args).to(args.device)
+    model = modal_MAE_generation(args).to(args.device)
 
     # 定义损失函数和优化器
     criterion = get_criterion(args)
