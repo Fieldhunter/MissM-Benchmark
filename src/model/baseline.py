@@ -6,16 +6,28 @@ import torch.nn.functional as F
 missing_type_index = {'language': 1, 'video': 2, 'audio': 3}
 
 
+class Head(nn.Module):
+    def __init__(self, args, input_dims, output_dims):
+        super(Head, self).__init__()
+
+        self.head = nn.Sequential(
+            nn.Linear(input_dims, args.fusion_dim),
+            nn.ReLU(inplace=True),
+            nn.Dropout(args.dropout_prob),
+            nn.Linear(args.fusion_dim, output_dims)
+        )
+
+    def forward(self, inputs):
+        return self.head(inputs)
+
+
 class modal_sum(nn.Module):
-    def __init__(self, args):
+    def __init__(self, args, output_dims):
         super(modal_sum, self).__init__()
 
         self.modality_types = args.modality_types
         self.modal_proj = nn.ModuleDict({modal: nn.Linear(args.feature_dims, args.fusion_dim) for modal in args.modality_types})
-
-        self.output_dropout = args.dropout_prob
-        self.proj1 = nn.Linear(args.fusion_dim, args.fusion_dim)
-        self.proj2 = nn.Linear(args.fusion_dim, 1)
+        self.head = Head(args, args.fusion_dim, output_dims)
 
     def forward(self, batch, missing_index):
         # batch: [batchsize, feature_dims]
@@ -26,22 +38,16 @@ class modal_sum(nn.Module):
             inputs.append(data)
         inputs = sum(inputs)
 
-        output = self.proj2(
-            F.dropout(F.relu(self.proj1(inputs), inplace=True), p=self.output_dropout, training=self.training))
-
-        return output
+        return self.head(inputs)
 
 
 class modal_concat_zero_padding(nn.Module):
-    def __init__(self, args):
+    def __init__(self, args, output_dims):
         super(modal_concat_zero_padding, self).__init__()
 
         self.modality_types = args.modality_types
         self.modal_proj = nn.ModuleDict({modal: nn.Linear(args.feature_dims, args.fusion_dim) for modal in args.modality_types})
-
-        self.output_dropout = args.dropout_prob
-        self.proj1 = nn.Linear(args.fusion_dim * len(args.modality_types), args.fusion_dim)
-        self.proj2 = nn.Linear(args.fusion_dim, 1)
+        self.head = Head(args, args.fusion_dim * len(args.modality_types), output_dims)
 
     def forward(self, batch, missing_index):
         # batch: [batchsize, feature_dims]
@@ -51,23 +57,18 @@ class modal_concat_zero_padding(nn.Module):
             inputs.append(self.modal_proj[modal](batch[modal]))
         inputs = torch.cat(inputs, dim=-1)
 
-        output = self.proj2(
-            F.dropout(F.relu(self.proj1(inputs), inplace=True), p=self.output_dropout, training=self.training))
+        return self.head(inputs)
 
-        return output
 
 # 均值填充--计算每个模态在数据集上的特征均值,使用这些均值来替代缺失模态的特征
 class modal_mean_filling(nn.Module):
-    def __init__(self, args):
+    def __init__(self, args, output_dims):
         super(modal_mean_filling, self).__init__()
 
         self.modality_types = args.modality_types
         self.modal_proj = nn.ModuleDict(
             {modal: nn.Linear(args.feature_dims, args.fusion_dim) for modal in args.modality_types})
-
-        self.output_dropout = args.dropout_prob
-        self.proj1 = nn.Linear(args.fusion_dim, args.fusion_dim)
-        self.proj2 = nn.Linear(args.fusion_dim, 1)
+        self.head = Head(args, args.fusion_dim, output_dims)
 
         # 为每个模态存储均值
         self.register_buffer('modal_means', torch.zeros(len(args.modality_types), args.fusion_dim))
@@ -99,24 +100,18 @@ class modal_mean_filling(nn.Module):
             inputs.append(data)
         inputs = sum(inputs)
 
-        output = self.proj2(
-            F.dropout(F.relu(self.proj1(inputs), inplace=False), p=self.output_dropout, training=self.training))
-
-        return output
+        return self.head(inputs)
 
 
 # 中位数填充模型--使用每个模态特征的中位数替代缺失值
 class modal_median_filling(nn.Module):
-    def __init__(self, args):
+    def __init__(self, args, output_dims):
         super(modal_median_filling, self).__init__()
 
         self.modality_types = args.modality_types
         self.modal_proj = nn.ModuleDict(
             {modal: nn.Linear(args.feature_dims, args.fusion_dim) for modal in args.modality_types})
-
-        self.output_dropout = args.dropout_prob
-        self.proj1 = nn.Linear(args.fusion_dim, args.fusion_dim)
-        self.proj2 = nn.Linear(args.fusion_dim, 1)
+        self.head = Head(args, args.fusion_dim, output_dims)
 
         # 为每个模态存储中位数
         self.register_buffer('modal_medians', torch.zeros(len(args.modality_types), args.fusion_dim))
@@ -149,26 +144,18 @@ class modal_median_filling(nn.Module):
             inputs.append(data)
         inputs = sum(inputs)
 
-        output = self.proj2(
-            F.dropout(F.relu(self.proj1(inputs), inplace=False), p=self.output_dropout, training=self.training))
-            # 改为inplace=False
-
-        return output
-
+        return self.head(inputs)
 
 
 #KNN填充模型--为每个缺失样本找到最相似的K个样本,基于余弦相似度计算样本间的相似性.使用加权平均的方式生成填充特征.
 class modal_knn_filling(nn.Module):
-    def __init__(self, args):
+    def __init__(self, args, output_dims):
         super(modal_knn_filling, self).__init__()
 
         self.modality_types = args.modality_types
         self.modal_proj = nn.ModuleDict(
             {modal: nn.Linear(args.feature_dims, args.fusion_dim) for modal in args.modality_types})
-
-        self.output_dropout = args.dropout_prob
-        self.proj1 = nn.Linear(args.fusion_dim * len(args.modality_types), args.fusion_dim)
-        self.proj2 = nn.Linear(args.fusion_dim, 1)
+        self.head = Head(args, args.fusion_dim * len(args.modality_types), output_dims)
 
         # kNN参数
         self.k = args.get('knn_k', 3) if hasattr(args, 'get') else 3  # 默认使用3个最近邻
@@ -268,21 +255,18 @@ class modal_knn_filling(nn.Module):
         # 拼接各模态特征
         inputs = torch.cat([projected_features[modal] for modal in self.modality_types], dim=-1)
 
-        # 修改inplace参数
-        output = self.proj2(
-            F.dropout(F.relu(self.proj1(inputs), inplace=False), p=self.output_dropout, training=self.training))
-
-        return output
+        return self.head(inputs)
 
 
 # 使用其他模态信息进行线性回归填充的模型----学习不同模态间的映射关系,使用可用模态通过线性回归预测缺失模态,结合多个源模态的预测结果
 class modal_regression_filling(nn.Module):
-    def __init__(self, args):
+    def __init__(self, args, output_dims):
         super(modal_regression_filling, self).__init__()
 
         self.modality_types = args.modality_types
         self.modal_proj = nn.ModuleDict(
             {modal: nn.Linear(args.feature_dims, args.fusion_dim) for modal in args.modality_types})
+        self.head = Head(args, args.fusion_dim, output_dims)
 
         # 添加模态间回归模型
         self.cross_modal_regressors = nn.ModuleDict()
@@ -291,10 +275,6 @@ class modal_regression_filling(nn.Module):
                 if source_modal != target_modal:
                     key = f"{source_modal}_to_{target_modal}"
                     self.cross_modal_regressors[key] = nn.Linear(args.fusion_dim, args.fusion_dim)
-
-        self.output_dropout = args.dropout_prob
-        self.proj1 = nn.Linear(args.fusion_dim, args.fusion_dim)
-        self.proj2 = nn.Linear(args.fusion_dim, 1)
 
     def forward(self, batch, missing_index):
         # 首先获取所有模态的投影特征
@@ -359,31 +339,24 @@ class modal_regression_filling(nn.Module):
         # 融合所有填充后的模态
         inputs = sum([filled_features[modal] for modal in self.modality_types])
 
-        # 使用非原地操作
-        output = self.proj2(
-            F.dropout(F.relu(self.proj1(inputs), inplace=False), p=self.output_dropout, training=self.training))
-
-        return output
+        return self.head(inputs)
 
 
 # 模态注意力融合模型----为不同模态分配动态权重,自动调整不同模态的重要性,对缺失模态的注意力权重置零
 class modal_attention_fusion(nn.Module):
-    def __init__(self, args):
+    def __init__(self, args, output_dims):
         super(modal_attention_fusion, self).__init__()
 
         self.modality_types = args.modality_types
         self.modal_proj = nn.ModuleDict(
             {modal: nn.Linear(args.feature_dims, args.fusion_dim) for modal in args.modality_types})
+        self.head = Head(args, args.fusion_dim, output_dims)
 
         # 为每个模态添加注意力权重
         self.attention = nn.ModuleDict({modal: nn.Linear(args.fusion_dim, 1) for modal in args.modality_types})
 
         # 添加模态间的交互
         self.fusion_layer = nn.Linear(args.fusion_dim * len(args.modality_types), args.fusion_dim)
-
-        self.output_dropout = args.dropout_prob
-        self.proj1 = nn.Linear(args.fusion_dim, args.fusion_dim)
-        self.proj2 = nn.Linear(args.fusion_dim, 1)
 
         # 添加层归一化
         self.norm = nn.LayerNorm(args.fusion_dim)
@@ -448,27 +421,20 @@ class modal_attention_fusion(nn.Module):
         # 添加层归一化提高稳定性
         normalized_features = self.norm(fused_features)
 
-        # 最终预测
-        hidden = F.relu(self.proj1(normalized_features), inplace=False)
-        output = self.proj2(F.dropout(hidden, p=self.output_dropout, training=self.training))
-
-        return output
+        return self.head(normalized_features)
 
 
 # 使用MAE模块生成缺失模态特征----使用类似MAE(Masked Autoencoder)的架构,通过交叉模态编码器从可用模态推断缺失模态,每个模态都可以被其他模态重建
 class modal_MAE_generation(nn.Module):
-    def __init__(self, args):
+    def __init__(self, args, output_dims):
         super(modal_MAE_generation, self).__init__()
 
         self.modality_types = args.modality_types
         self.fusion_dim = args.fusion_dim
 
-        # 计算预期的输入维度（所有模态的特征维度和）
-        self.total_fusion_dim = args.fusion_dim * len(args.modality_types)
-
-        # 模态特征投影
         self.modal_proj = nn.ModuleDict(
             {modal: nn.Linear(args.feature_dims, args.fusion_dim) for modal in args.modality_types})
+        self.head = Head(args, args.fusion_dim * len(args.modality_types), output_dims)
 
         # 交叉模态编码器 - 用于从可用模态推断缺失模态
         self.cross_modal_encoders = nn.ModuleDict()
@@ -488,12 +454,6 @@ class modal_MAE_generation(nn.Module):
             modal: nn.Linear(args.fusion_dim * (len(args.modality_types) - 1), args.fusion_dim)
             for modal in args.modality_types
         })
-
-        # 输出层 - 确保维度正确匹配
-        self.output_dropout = args.dropout_prob
-        # 修改投影层维度，确保与输入匹配
-        self.proj1 = nn.Linear(self.total_fusion_dim, args.fusion_dim)  # 输入维度为所有模态维度之和
-        self.proj2 = nn.Linear(args.fusion_dim, 1)
 
     def forward(self, batch, missing_index):
         # 获取当前设备
@@ -545,22 +505,4 @@ class modal_MAE_generation(nn.Module):
 
         inputs = torch.cat(all_features, dim=-1)
 
-        # 验证输入维度
-        expected_dim = self.total_fusion_dim
-        actual_dim = inputs.shape[-1]
-
-        if actual_dim != expected_dim:
-            print(f"警告: 输入维度 {actual_dim} 与期望维度 {expected_dim} 不匹配!")
-            # 可以在这里添加简单的修复，如填充或裁剪
-
-        # 输出层 - 使用非原地激活函数
-        output = self.proj2(
-            F.dropout(F.relu(self.proj1(inputs), inplace=False), p=self.output_dropout, training=self.training))
-
-        return output
-
-
-
-
-
-
+        return self.head(inputs)

@@ -40,10 +40,10 @@ def simulate_missing_modality(n_samples,
 
 
 if __name__ == '__main__':
-    embedding_path = '/big-data/person/yuanjiang/MLMM_datasets/CH-SIMS/embedding.pkl'
+    embedding_path = '/big-data/person/yuanjiang/MLMM_datasets/eNTERFACE/embedding.pkl'
     seed = 2025
     missing_ratio = [0.3, 0.5, 0.7]
-    modal = ['language', 'video', 'audio']
+    modal = ['video', 'audio']
     modal.append('mixed')
 
     with open(embedding_path, 'rb') as f:

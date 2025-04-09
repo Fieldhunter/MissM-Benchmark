@@ -5,30 +5,28 @@ import torch.optim as optim
 import numpy as np
 import argparse
 from tqdm import tqdm
+from sklearn.metrics import accuracy_score, f1_score
 from torch.utils.tensorboard import SummaryWriter
 from src.dataset.data_loader import data_loader
 from src.model.MULT import MultiModal_Sentiment_Analysis
-from src.model.baseline import modal_sum, modal_concat_zero_padding,modal_mean_filling,modal_median_filling,modal_knn_filling,modal_regression_filling,modal_attention_fusion,modal_MAE_generation
+from src.model.baseline import modal_sum, modal_concat_zero_padding, modal_mean_filling, modal_median_filling, modal_knn_filling, modal_regression_filling, modal_attention_fusion, modal_MAE_generation
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
     # 数据相关参数
-    parser.add_argument('--train_mode', type=str, default="regression", help='regression or classification')
-    parser.add_argument('--datasetName', type=str, default='sims', help='support mosi/mosei/sims')
-    parser.add_argument('--modality_types', type=str, default=['language', 'video', 'audio'])
+    parser.add_argument('--train_mode', type=str, default="classification", help='regression or classification')
+    parser.add_argument('--datasetName', type=str, default='eNTERFACE', help='support mosi/sims/eNTERFACE')
+    parser.add_argument('--modality_types', type=list, default=['video', 'audio'], help="['language', 'video', 'audio']")
+    parser.add_argument('--dataPath', type=str, default='../MLMM_datasets/CH-SIMS/unaligned_39.pkl')
     parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--num_workers', type=int, default=4)
-    parser.add_argument('--dataPath', type=str, default='/big-data/person/yuanjiang/MLMM_datasets/CH-SIMS/unaligned_39.pkl')
-    parser.add_argument('--need_data_aligned', type=bool, default=False)
-    parser.add_argument('--need_truncated', type=bool, default=True)
-    parser.add_argument('--need_normalized', type=bool, default=True)
     parser.add_argument('--missing', type=bool, default=True)
-    parser.add_argument('--missing_ratio', type=float, default=0.5, help='0.3/0.5/0.7')
+    parser.add_argument('--missing_ratio', type=float, default=0.3, help='0.3/0.5/0.7')
     parser.add_argument('--missing_type', type=str, default='mixed', help='language/video/audio/mixed')
-    parser.add_argument('--feature_dims', type=int, default=768, help='the output dims of languagebind')
 
     # 模型相关参数
+    parser.add_argument('--feature_dims', type=int, default=768, help='the output dims of languagebind')
     parser.add_argument('--fusion_type', type=str, default='concat')
     parser.add_argument('--fusion_dim', type=int, default=256)
     parser.add_argument('--dropout_prob', type=float, default=0.1)
@@ -61,7 +59,7 @@ def get_criterion(args):
         return nn.CrossEntropyLoss()
 
 
-def evaluate(model, dataloader, criterion, device):
+def evaluate(model, dataloader, criterion):
     model.eval()
     total_loss = 0.0
     all_preds = []
@@ -79,41 +77,30 @@ def evaluate(model, dataloader, criterion, device):
             loss = criterion(outputs, labels)
             total_loss += loss.item()
 
-            # # 处理预测结果
-            # if args.train_mode == 'regression':
-            #     preds = outputs.detach().cpu().numpy()
-            #     all_preds.extend(preds)
-            #     all_labels.extend(labels.detach().cpu().numpy())
-            # else:
-            #     preds = torch.argmax(outputs, dim=1).detach().cpu().numpy()
-            #     all_preds.extend(preds)
-            #     all_labels.extend(labels.detach().cpu().numpy())
-            #
-            # metrics = {}
-            # for emotion in ['A', 'M', 'T', 'V']:
-            #     if emotion in all_preds and len(all_preds[emotion]) > 0:
-            #         emotion_preds = np.array(all_preds[emotion])
-            #         emotion_labels = np.array(all_labels[emotion])
-            #
-            #         # 计算该情感的指标（例如MSE、相关系数等）
-            #         mse = np.mean((emotion_preds - emotion_labels) ** 2)
-            #         metrics[f'{emotion}_mse'] = mse
-    # 计算指标
-    # if args.train_mode == 'regression':
-    #     # 对于回归任务，计算MSE
-    #     metrics = {'loss': total_loss / len(dataloader),
-    #                'mse': np.mean((np.array(all_preds) - np.array(all_labels)) ** 2)}
-    # else:
-    #     # 对于分类任务，计算准确率和F1分数
-    #     metrics = {
-    #         'loss': total_loss / len(dataloader),
-    #         'accuracy': accuracy_score(all_labels, all_preds),
-    #         'f1': f1_score(all_labels, all_preds, average='weighted')
-    #     }
-    avg_loss = total_loss / len(dataloader)
-    # metrics['loss'] = avg_loss
+            # 处理预测结果
+            if args.train_mode == 'regression':
+                preds = outputs.detach().cpu().numpy()
+                all_preds.extend(preds)
+                all_labels.extend(labels.detach().cpu().numpy())
+            else:
+                preds = torch.argmax(outputs, dim=1).detach().cpu().numpy()
+                all_preds.extend(preds)
+                all_labels.extend(labels.detach().cpu().numpy())
 
-    return {'loss': avg_loss}
+    # 计算指标
+    if args.train_mode == 'regression':
+        # 对于回归任务，计算MSE
+        metrics = {'loss': total_loss / len(dataloader),
+                   'mse': np.mean((np.array(all_preds) - np.array(all_labels)) ** 2)}
+    else:
+        # 对于分类任务，计算准确率和F1分数
+        metrics = {
+            'loss': total_loss / len(dataloader),
+            'accuracy': accuracy_score(all_labels, all_preds),
+            'f1': f1_score(all_labels, all_preds, average='weighted')
+        }
+
+    return metrics
 
 
 def train(args):
@@ -131,19 +118,18 @@ def train(args):
 
     # 加载数据集
     print("Loading data...")
-    train_loader, test_loader, valid_loader = data_loader(args.batch_size, 'sims', args.missing, args.missing_type, args.missing_ratio)
+    train_loader, test_loader, valid_loader, output_dims = data_loader(args.batch_size, args.datasetName, args.missing, args.missing_type, args.missing_ratio)
 
     # 初始化模型
     print("Initializing model...")
-    # model = MultiModal_Sentiment_Analysis(args).to(args.device)
-    # model = modal_sum(args).to(args.device)
-    # model = modal_concat_zero_padding(args).to(args.device)
-    # model = modal_mean_filling(args).to(args.device)
-    # model = modal_median_filling(args).to(args.device)
-    # model = modal_knn_filling(args).to(args.device)
-    # model = modal_regression_filling(args).to(args.device)
-    # model = modal_attention_fusion(args).to(args.device)
-    model = modal_MAE_generation(args).to(args.device)
+    # model = modal_sum(args, output_dims).to(args.device)
+    # model = modal_concat_zero_padding(args, output_dims).to(args.device)
+    # model = modal_mean_filling(args, output_dims).to(args.device)
+    # model = modal_median_filling(args, output_dims).to(args.device)
+    # model = modal_knn_filling(args, output_dims).to(args.device)
+    # model = modal_regression_filling(args, output_dims).to(args.device)
+    model = modal_attention_fusion(args, output_dims).to(args.device)
+    # model = modal_MAE_generation(args, output_dims).to(args.device)
 
     # 定义损失函数和优化器
     criterion = get_criterion(args)
@@ -185,7 +171,7 @@ def train(args):
 
         # 验证模型
         print("Evaluating model...")
-        val_metrics = evaluate(model, valid_loader, criterion, args.device)
+        val_metrics = evaluate(model, valid_loader, criterion)
 
         for k, v in val_metrics.items():
             writer.add_scalar(f'{k}/val', v, epoch)
@@ -235,7 +221,7 @@ def train(args):
     model.load_state_dict(checkpoint['model_state_dict'])
 
     print("Evaluating on test set...")
-    test_metrics = evaluate(model, test_loader, criterion, args.device)
+    test_metrics = evaluate(model, test_loader, criterion)
 
     print("Test Results:")
     print(f"Test Loss: {test_metrics['loss']:.4f}")
