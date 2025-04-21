@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
-
+import numpy as np
 
 missing_type_index = {'language': 1, 'video': 2, 'audio': 3}
 
@@ -29,7 +29,7 @@ class modal_sum(nn.Module):
         self.modal_proj = nn.ModuleDict({modal: nn.Linear(args.feature_dims, args.fusion_dim) for modal in args.modality_types})
         self.head = Head(args, args.fusion_dim, output_dims)
 
-    def forward(self, batch, missing_index):
+    def forward(self, batch, missing_index,statistics):
         # batch: [batchsize, feature_dims]
         inputs = []
         for modal in self.modality_types:
@@ -49,7 +49,7 @@ class modal_concat_zero_padding(nn.Module):
         self.modal_proj = nn.ModuleDict({modal: nn.Linear(args.feature_dims, args.fusion_dim) for modal in args.modality_types})
         self.head = Head(args, args.fusion_dim * len(args.modality_types), output_dims)
 
-    def forward(self, batch, missing_index):
+    def forward(self, batch, missing_index,statistics):
         # batch: [batchsize, feature_dims]
         inputs = []
         for modal in self.modality_types:
@@ -70,21 +70,26 @@ class modal_mean_filling(nn.Module):
             {modal: nn.Linear(args.feature_dims, args.fusion_dim) for modal in args.modality_types})
         self.head = Head(args, args.fusion_dim, output_dims)
 
-        # 为每个模态存储均值
+        # 注册均值buffer，用于存储当前使用的均值
         self.register_buffer('modal_means', torch.zeros(len(args.modality_types), args.fusion_dim))
-        self.mean_initialized = False
 
-    def _update_means(self, batch):
-        # 只在第一次前向传播时计算均值
-        if not self.mean_initialized:
-            with torch.no_grad():  # 防止创建计算图
-                for i, modal in enumerate(self.modality_types):
-                    self.modal_means[i] = self.modal_proj[modal](batch[modal]).mean(dim=0)
-            self.mean_initialized = True
-
-    def forward(self, batch, missing_index):
+    def forward(self, batch, missing_index,statistics):
         # 更新模态均值
-        self._update_means(batch)
+        # self._update_means(batch)
+        # 每次前向传播时更新统计值
+        with torch.no_grad():
+            for i, modal in enumerate(self.modality_types):
+                scalar_means = [element[0]
+                                for element in statistics[modal]['mean']]
+                # print(scalar_means)
+                modal_mean = torch.tensor(scalar_means,
+                                          dtype=torch.float32,
+                                          device=self.modal_means.device)
+
+                # modal_mean = torch.tensor(statistics[modal]['mean'])
+
+                # 应用投影层存储处理后的均值
+                self.modal_means[i] = self.modal_proj[modal](modal_mean)
 
         # batch: [batchsize, feature_dims]
         inputs = []
@@ -114,21 +119,25 @@ class modal_median_filling(nn.Module):
         self.head = Head(args, args.fusion_dim, output_dims)
 
         # 为每个模态存储中位数
-        self.register_buffer('modal_medians', torch.zeros(len(args.modality_types), args.fusion_dim))
-        self.median_initialized = False
+        self.register_buffer('modal_median', torch.zeros(len(args.modality_types), args.fusion_dim))
 
-    def _update_medians(self, batch):
-        # 只在第一次前向传播时计算中位数
-        if not self.median_initialized:
-            with torch.no_grad():  # 使用torch.no_grad()防止创建计算图
-                for i, modal in enumerate(self.modality_types):
-                    projected = self.modal_proj[modal](batch[modal])
-                    self.modal_medians[i] = torch.median(projected, dim=0)[0]
-            self.median_initialized = True
 
-    def forward(self, batch, missing_index):
+
+    def forward(self, batch, missing_index,statistics):
         # 更新模态中位数
-        self._update_medians(batch)
+        with torch.no_grad():
+            for i, modal in enumerate(self.modality_types):
+                scalar_medians = [element[0]
+                                for element in statistics[modal]['median']]
+                # print(scalar_medians)
+                modal_median = torch.tensor(scalar_medians,
+                                          dtype=torch.float32,
+                                          device=self.modal_median.device)
+
+                # modal_mean = torch.tensor(statistics[modal]['mean'])
+
+                # 应用投影层存储处理后的均值
+                self.modal_median[i] = self.modal_proj[modal](modal_median)
 
         # batch: [batchsize, feature_dims]
         inputs = []
@@ -139,121 +148,10 @@ class modal_median_filling(nn.Module):
             if mask.any():
                 # 创建新的张量而不是直接修改原始张量
                 filled_data = data.clone()
-                filled_data[mask] = self.modal_medians[i].unsqueeze(0).repeat(mask.sum(), 1)
+                filled_data[mask] = self.modal_median[i].unsqueeze(0).repeat(mask.sum(), 1)
                 data = filled_data
             inputs.append(data)
         inputs = sum(inputs)
-
-        return self.head(inputs)
-
-
-#KNN填充模型--为每个缺失样本找到最相似的K个样本,基于余弦相似度计算样本间的相似性.使用加权平均的方式生成填充特征.
-class modal_knn_filling(nn.Module):
-    def __init__(self, args, output_dims):
-        super(modal_knn_filling, self).__init__()
-
-        self.modality_types = args.modality_types
-        self.modal_proj = nn.ModuleDict(
-            {modal: nn.Linear(args.feature_dims, args.fusion_dim) for modal in args.modality_types})
-        self.head = Head(args, args.fusion_dim * len(args.modality_types), output_dims)
-
-        # kNN参数
-        self.k = args.get('knn_k', 3) if hasattr(args, 'get') else 3  # 默认使用3个最近邻
-        self.max_feature_bank_size = 1000  # 控制特征库大小
-        self.feature_bank = {modal: [] for modal in args.modality_types}
-
-    def _find_knn(self, modal, available_indices, missing_indices):
-        if len(self.feature_bank[modal]) == 0 or len(available_indices) == 0:
-            # 如果没有特征库或没有可用数据，返回None
-            return None
-
-        features = torch.stack(self.feature_bank[modal])
-        # 确保索引有效
-        batch_size = features.size(0)
-        valid_available_indices = [idx.item() for idx in available_indices if idx.item() < batch_size]
-
-        if not valid_available_indices:
-            return None
-
-        # 计算余弦相似度
-        sim = F.cosine_similarity(features.unsqueeze(1), features.unsqueeze(0), dim=2)
-
-        # 对每个缺失样本，找到k个最相似的可用样本
-        knn_values = []
-        for missing_idx in missing_indices:
-            missing_idx_item = missing_idx.item()
-            if missing_idx_item >= batch_size:
-                knn_values.append(torch.zeros_like(features[0]))
-                continue
-
-            # 获取与其他样本的相似度
-            similarities = sim[missing_idx_item]
-
-            # 过滤有效可用样本索引
-            valid_indices = torch.tensor([idx for idx in valid_available_indices if idx < len(similarities)],
-                                         device=similarities.device)
-
-            if len(valid_indices) == 0:
-                knn_values.append(torch.zeros_like(features[0]))
-                continue
-
-            # 获取这些索引对应的相似度
-            valid_similarities = similarities[valid_indices]
-
-            # 找到top-k
-            topk_values, topk_indices = valid_similarities.topk(min(self.k, len(valid_similarities)))
-
-            # 获取相应的特征并加权平均
-            selected_indices = valid_indices[topk_indices]
-            topk_features = features[selected_indices]
-            weights = F.softmax(topk_values, dim=0).unsqueeze(1)
-            knn_value = (topk_features * weights).sum(0)
-            knn_values.append(knn_value)
-
-        return torch.stack(knn_values) if knn_values else None
-
-    def forward(self, batch, missing_index):
-        # batch: [batchsize, feature_dims]
-        projected_features = {}
-
-        # 首先获取所有模态的投影特征
-        for modal in self.modality_types:
-            projected_features[modal] = self.modal_proj[modal](batch[modal])
-
-            # 更新特征库 - 只存储非缺失样本的特征
-            modal_mask = missing_index != missing_type_index[modal]
-            if modal_mask.any():
-                with torch.no_grad():
-                    features_to_add = projected_features[modal][modal_mask].detach().cpu()
-                    # 将新特征添加到特征库
-                    self.feature_bank[modal].extend([f for f in features_to_add])
-                    # 控制特征库大小
-                    if len(self.feature_bank[modal]) > self.max_feature_bank_size:
-                        self.feature_bank[modal] = self.feature_bank[modal][-self.max_feature_bank_size:]
-
-        # 处理缺失模态
-        for modal in self.modality_types:
-            missing_mask = missing_index == missing_type_index[modal]
-            if not missing_mask.any():
-                continue
-
-            missing_indices = torch.where(missing_mask)[0]
-            available_indices = torch.where(~missing_mask)[0]
-
-            # 使用kNN填充
-            knn_features = self._find_knn(modal, available_indices, missing_indices)
-
-            # 创建新张量而不是修改原张量
-            filled_features = projected_features[modal].clone()
-            if knn_features is not None:
-                filled_features[missing_mask] = knn_features.to(projected_features[modal].device)
-            else:
-                filled_features[missing_mask] = torch.zeros_like(projected_features[modal][missing_mask])
-
-            projected_features[modal] = filled_features
-
-        # 拼接各模态特征
-        inputs = torch.cat([projected_features[modal] for modal in self.modality_types], dim=-1)
 
         return self.head(inputs)
 
@@ -276,7 +174,7 @@ class modal_regression_filling(nn.Module):
                     key = f"{source_modal}_to_{target_modal}"
                     self.cross_modal_regressors[key] = nn.Linear(args.fusion_dim, args.fusion_dim)
 
-    def forward(self, batch, missing_index):
+    def forward(self, batch, missing_index,statistics):
         # 首先获取所有模态的投影特征
         projected_features = {}
         for modal in self.modality_types:
@@ -361,7 +259,7 @@ class modal_attention_fusion(nn.Module):
         # 添加层归一化
         self.norm = nn.LayerNorm(args.fusion_dim)
 
-    def forward(self, batch, missing_index):
+    def forward(self, batch, missing_index,statistics):
         batch_size = batch[self.modality_types[0]].size(0)
 
         # 获取各模态特征
@@ -455,7 +353,7 @@ class modal_MAE_generation(nn.Module):
             for modal in args.modality_types
         })
 
-    def forward(self, batch, missing_index):
+    def forward(self, batch, missing_index,statistics):
         # 获取当前设备
         device = next(self.parameters()).device
 

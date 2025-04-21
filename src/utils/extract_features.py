@@ -4,8 +4,18 @@ from tqdm import tqdm
 from sklearn.preprocessing import LabelEncoder
 import sys
 sys.path.append('.')
+import os
 
+import numpy as np
 from src.model.encoder import Encoder
+
+def calculate_statistics(data_list):
+    """计算列表数据的均值和中位数"""
+    data_array = np.array(data_list)
+    return {
+        'mean': np.mean(data_array, axis=0).tolist(),
+        'median': np.median(data_array, axis=0).tolist()
+    }
 
 
 def sims_mosi_extract(csv_path, modal=['t', 'v', 'a']):
@@ -26,6 +36,10 @@ def sims_mosi_extract(csv_path, modal=['t', 'v', 'a']):
 
     encoder = Encoder(modal=modal)
     result = {m: {name: [] for name in key_list} for m in ['train', 'valid', 'test']}
+    result['statistics'] = {m: {} for m in ['train', 'valid', 'test']}
+
+
+
     for index in tqdm(range(len(data['label']))):
         inputs = {
             'language': data['language'][index],
@@ -39,6 +53,13 @@ def sims_mosi_extract(csv_path, modal=['t', 'v', 'a']):
                 result[data['mode'][index]][key].append(embedding[key].squeeze(0).cpu().tolist())
             else:
                 result[data['mode'][index]][key].append(data[key][index])
+
+    # 计算每个模态的统计信息
+    for mode in ['train', 'valid', 'test']:
+        for modal_key in ['language','video', 'audio']:
+            if result[mode][modal_key]:  # 确保列表不为空
+                result['statistics'][mode][modal_key] = calculate_statistics(result[mode][modal_key])
+
 
     return result
 
@@ -58,6 +79,9 @@ def eNTERFACE_extract(csv_path, modal=['v', 'a']):
     encoder = Encoder(modal=modal)
     result = {m: {name: [] for name in key_list} for m in ['train', 'valid', 'test']}
     result['class_index'] = label_encoder.classes_
+    result['statistics'] = {m: {} for m in ['train', 'valid', 'test']}
+    # 为每个模态创建统计信息字典
+
 
     for index in tqdm(range(len(data['label']))):
         inputs = {
@@ -71,7 +95,13 @@ def eNTERFACE_extract(csv_path, modal=['v', 'a']):
                 result[data['mode'][index]][key].append(embedding[key].squeeze(0).cpu().tolist())
             else:
                 result[data['mode'][index]][key].append(data[key][index])
+    # 计算每个模态的统计信息
+    for mode in ['train', 'valid', 'test']:
+        for modal_key in ['video', 'audio']:
+            if result[mode][modal_key]:  # 确保列表不为空
+                result['statistics'][mode][modal_key] = calculate_statistics(result[mode][modal_key])
 
+    # 将统计信息添加到结果中
     return result
 
 
