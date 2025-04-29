@@ -22,7 +22,7 @@ def parse_args():
     parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--num_workers', type=int, default=4)
     parser.add_argument('--missing', type=bool, default=True)
-    parser.add_argument('--missing_ratio', type=float, default=0.3, help='0.3/0.5/0.7')
+    parser.add_argument('--missing_ratio', type=float, default=0.7, help='0.3/0.5/0.7')
     parser.add_argument('--missing_type', type=str, default='mixed', help='language/video/audio/mixed')
 
     # 模型相关参数
@@ -66,14 +66,15 @@ def evaluate(model, dataloader, criterion):
     all_labels = []
 
     with torch.no_grad():
-        for data, label, missing_index,statistics in tqdm(dataloader):
+        for data, label, missing_index in tqdm(dataloader):
             # 处理数据
             for k, v in data.items():
                 data[k] = v.to(args.device)
             labels = label['label'].to(args.device)
+            missing_index = missing_index.to(args.device)
 
             # 前向传播
-            outputs = model(data, missing_index,statistics)
+            outputs = model(data, missing_index)
             loss = criterion(outputs, labels)
             total_loss += loss.item()
 
@@ -124,11 +125,10 @@ def train(args):
     print("Initializing model...")
     # model = modal_sum(args, output_dims).to(args.device)
     # model = modal_concat_zero_padding(args, output_dims).to(args.device)
-    # model = modal_mean_filling(args, output_dims).to(args.device)
-    # model = modal_median_filling(args, output_dims).to(args.device)
+    # model = modal_mean_filling(args, output_dims, train_loader.dataset.statistics['mean']).to(args.device)
+    # model = modal_median_filling(args, output_dims, train_loader.dataset.statistics['median']).to(args.device)
     model = modal_regression_filling(args, output_dims).to(args.device)
     # model = modal_attention_fusion(args, output_dims).to(args.device)
-    # model = modal_MAE_generation(args, output_dims).to(args.device)
     # model = modal_MAE_generation(args, output_dims).to(args.device)
 
     # 定义损失函数和优化器
@@ -147,16 +147,17 @@ def train(args):
         train_loss = 0.0
         progress_bar = tqdm(train_loader, desc=f'Epoch {epoch + 1}/{args.num_epochs}')
 
-        for data, label, missing_index,statistics in progress_bar:
+        for data, label, missing_index in progress_bar:
             optimizer.zero_grad()
 
             # 处理数据
             for k, v in data.items():
                 data[k] = v.to(args.device)
             labels = label['label'].to(args.device)
+            missing_index = missing_index.to(args.device)
 
             # 前向传播
-            outputs = model(data, missing_index,statistics)
+            outputs = model(data, missing_index)
             loss = criterion(outputs, labels)
 
             # 反向传播

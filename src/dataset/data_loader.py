@@ -4,9 +4,10 @@ import pickle
 
 
 class MMDataset_sims_mosi(torch.utils.data.Dataset):
-    def __init__(self, data, missing=False, missing_index=None):
+    def __init__(self, data, missing=False, missing_index=None, statistics=None):
         self.data = data
         self.missing = missing
+        self.statistics = statistics
         self.missing_index = missing_index if missing else [0 for _ in range(len(data['label']))]
 
     def __len__(self):
@@ -30,12 +31,11 @@ class MMDataset_sims_mosi(torch.utils.data.Dataset):
 
 
 class MMDataset_eNTERFACE(torch.utils.data.Dataset):
-    def __init__(self, data, missing=False, missing_index=None,statistics = None):
+    def __init__(self, data, missing=False, missing_index=None, statistics=None):
         self.data = data
         self.missing = missing
         self.statistics = statistics
         self.missing_index = missing_index if missing else [0 for _ in range(len(data['label']))]
-
 
     def __len__(self):
         return len(self.data['label'])
@@ -47,9 +47,7 @@ class MMDataset_eNTERFACE(torch.utils.data.Dataset):
         }
         label = {'label': self.data['label'][index]}
 
-        statistics = self.statistics
-
-        return data, label, self.missing_index[index],statistics
+        return data, label, self.missing_index[index]
 
 
 def data_loader(batch_size, dataset, missing=False, missing_type='language', missing_ratio=0.3):
@@ -71,9 +69,9 @@ def data_loader(batch_size, dataset, missing=False, missing_type='language', mis
         with open("/".join(embedding_path.split("/")[:-1]) + "/" + "missing_index.pkl", 'rb') as f:
             missing_index = pickle.load(f)[missing_type][missing_ratio]
 
-    train_data = dataset(data['train'], missing, missing_index,data['statistics']['train'])
-    test_data = dataset(data['test'],statistics=data['statistics']['test'])
-    val_data = dataset(data['valid'],statistics=data['statistics']['valid'])
+    train_data = dataset(data['train'], missing, missing_index, data['statistics'])
+    test_data = dataset(data['test'], statistics=data['statistics'])
+    val_data = dataset(data['valid'], statistics=data['statistics'])
     train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True)
     test_loader = DataLoader(test_data, batch_size=batch_size, shuffle=False)
     val_loader = DataLoader(val_data, batch_size=batch_size, shuffle=False)

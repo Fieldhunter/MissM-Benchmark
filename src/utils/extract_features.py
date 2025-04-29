@@ -9,13 +9,15 @@ import os
 import numpy as np
 from src.model.encoder import Encoder
 
-def calculate_statistics(data_list):
+
+def calculate_statistics(data_list, type):
     """计算列表数据的均值和中位数"""
     data_array = np.array(data_list)
-    return {
-        'mean': np.mean(data_array, axis=0).tolist(),
-        'median': np.median(data_array, axis=0).tolist()
-    }
+
+    if type == 'mean':
+        return np.mean(data_array, axis=0).tolist()
+    else:
+        return np.median(data_array, axis=0).tolist()
 
 
 def sims_mosi_extract(csv_path, modal=['t', 'v', 'a']):
@@ -36,9 +38,7 @@ def sims_mosi_extract(csv_path, modal=['t', 'v', 'a']):
 
     encoder = Encoder(modal=modal)
     result = {m: {name: [] for name in key_list} for m in ['train', 'valid', 'test']}
-    result['statistics'] = {m: {} for m in ['train', 'valid', 'test']}
-
-
+    result['statistics'] = {}
 
     for index in tqdm(range(len(data['label']))):
         inputs = {
@@ -55,11 +55,10 @@ def sims_mosi_extract(csv_path, modal=['t', 'v', 'a']):
                 result[data['mode'][index]][key].append(data[key][index])
 
     # 计算每个模态的统计信息
-    for mode in ['train', 'valid', 'test']:
-        for modal_key in ['language','video', 'audio']:
-            if result[mode][modal_key]:  # 确保列表不为空
-                result['statistics'][mode][modal_key] = calculate_statistics(result[mode][modal_key])
-
+    for type in ['mean', 'median']:
+        result['statistics'][type] = {}
+        for modal_key in ['language', 'video', 'audio']:
+            result['statistics'][type][modal_key] = calculate_statistics(result['train'][modal_key], type)
 
     return result
 
@@ -79,9 +78,7 @@ def eNTERFACE_extract(csv_path, modal=['v', 'a']):
     encoder = Encoder(modal=modal)
     result = {m: {name: [] for name in key_list} for m in ['train', 'valid', 'test']}
     result['class_index'] = label_encoder.classes_
-    result['statistics'] = {m: {} for m in ['train', 'valid', 'test']}
-    # 为每个模态创建统计信息字典
-
+    result['statistics'] = {}
 
     for index in tqdm(range(len(data['label']))):
         inputs = {
@@ -95,25 +92,24 @@ def eNTERFACE_extract(csv_path, modal=['v', 'a']):
                 result[data['mode'][index]][key].append(embedding[key].squeeze(0).cpu().tolist())
             else:
                 result[data['mode'][index]][key].append(data[key][index])
-    # 计算每个模态的统计信息
-    for mode in ['train', 'valid', 'test']:
-        for modal_key in ['video', 'audio']:
-            if result[mode][modal_key]:  # 确保列表不为空
-                result['statistics'][mode][modal_key] = calculate_statistics(result[mode][modal_key])
 
-    # 将统计信息添加到结果中
+        # 计算每个模态的统计信息
+        for type in ['mean', 'median']:
+            result['statistics'][type] = {}
+            for modal_key in ['video', 'audio']:
+                result['statistics'][type][modal_key] = calculate_statistics(result['train'][modal_key], type)
+
     return result
 
 
 if __name__ == '__main__':
     dataset = 'eNTERFACE'
-    modal = ['v', 'a']
     csv_path = '/big-data/person/yuanjiang/MLMM_datasets/eNTERFACE/label.csv'
 
     if dataset == 'sims' or dataset == 'mosi':
-        result = sims_mosi_extract(csv_path, modal)
+        result = sims_mosi_extract(csv_path)
     elif dataset == 'eNTERFACE':
-        result = eNTERFACE_extract(csv_path, modal)
+        result = eNTERFACE_extract(csv_path)
 
     with open("/".join(csv_path.split('/')[:-1]) + '/' + 'embedding.pkl', 'wb') as f:
         pickle.dump(result, f)
