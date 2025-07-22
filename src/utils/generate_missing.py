@@ -2,6 +2,7 @@ import pickle
 import numpy as np
 import random
 from tqdm import tqdm
+import pandas as pd
 
 
 def simulate_missing_modality(n_samples,
@@ -18,7 +19,7 @@ def simulate_missing_modality(n_samples,
     """
 
     # 0: avaliable, 1: text missing, 2: video missing, 3: audio missing
-    missing_type_index = {'language': 1, 'video': 2, 'audio': 3}
+    missing_type_index = {'language': 1, 'video': 2, 'audio': 3, 'image': 4}
     missing_count = int(n_samples * missing_ratio)
     missing_index_list = [0 for _ in range(n_samples)]
 
@@ -40,24 +41,27 @@ def simulate_missing_modality(n_samples,
 
 
 if __name__ == '__main__':
-    embedding_path = '/big-data/person/yuanjiang/MLMM_datasets/eNTERFACE/embedding.pkl'
+    file_path = '/big-data/person/yuanjiang/MLMM_datasets/mvsa_multiple/label.csv'
     seed = 2025
-    missing_ratio = [0.3, 0.5, 0.7]
-    modal = ['video', 'audio']
+    missing_ratio = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+    modal = ['language', 'image']  # ['language', 'video', 'audio', 'image']
     modal.append('mixed')
 
-    with open(embedding_path, 'rb') as f:
-        n_samples = len(pickle.load(f)['train']['label'])
+    df = pd.read_csv(file_path, converters={'clip_id': str})
+
     missing_list = {}
+    for dataset in ['train', 'valid', 'test']:
+        n_samples = len(df[df['mode'] == dataset]['annotation'])
 
-    for missing_type in modal:
-        missing_list[missing_type] = {}
-        for ratio in missing_ratio:
-            missing_list[missing_type][ratio] = simulate_missing_modality(n_samples, missing_type, ratio, modal, seed)
+        missing_list[dataset] = {}
+        for missing_type in modal:
+            missing_list[dataset][missing_type] = {}
+            for ratio in missing_ratio:
+                missing_list[dataset][missing_type][ratio] = simulate_missing_modality(n_samples, missing_type, ratio, modal, seed)
 
-        # different ratio shared same seed.
-        seed += 1
+            # different ratio shared same seed.
+            seed += 1
 
-    save_path = "/".join(embedding_path.split("/")[:-1]) + "/" + "missing_index.pkl"
+    save_path = "/".join(file_path.split("/")[:-1]) + "/" + "missing_index.pkl"
     with open(save_path, 'wb') as f:
         pickle.dump(missing_list, f)

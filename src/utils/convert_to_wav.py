@@ -13,8 +13,8 @@ def mp4_to_wav(mp4_path, wav_path, sampling_rate):
 
 
 if __name__ == '__main__':
-    mp4_dir = '/big-data/person/yuanjiang/MLMM_datasets/eNTERFACE/data'
-    wav_dir = '/big-data/person/yuanjiang/MLMM_datasets/eNTERFACE/wav'
+    mp4_dir = '/big-data/person/yuanjiang/MLMM_datasets/AVE_Dataset/ave_train_split'
+    wav_dir = '/big-data/person/yuanjiang/MLMM_datasets/AVE_Dataset/ave_train_split_wav'
     sampling_rate = 16000
 
     for file_path in Path(mp4_dir).rglob("*"):  # `*` 匹配所有文件和子目录
